@@ -3,6 +3,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+try:
+    from verify_wechat_dat import recover_wechat_dat
+except ModuleNotFoundError:
+    from src.verify_wechat_dat import recover_wechat_dat
+
 
 class WechatImageLocator:
     """根据消息表和 local_id 定位微信图片消息对应的本地文件路径。"""
@@ -27,7 +32,11 @@ class WechatImageLocator:
 
             message = self._fetch_message(conn, msg_table, local_id)
             resource_info = self._fetch_resource_info(conn, msg_table, message)
-            resource_details = self._fetch_resource_details(conn, resource_info["message_id"])
+            resource_details = (
+                self._fetch_resource_details(conn, resource_info["message_id"])
+                if resource_info is not None
+                else []
+            )
 
         file_base = self._extract_file_base(message["packed_info_data"])
         chat_md5 = msg_table.removeprefix("Msg_")
@@ -36,7 +45,7 @@ class WechatImageLocator:
 
         result = {
             "message": dict(message),
-            "resource_info": dict(resource_info),
+            "resource_info": dict(resource_info) if resource_info is not None else None,
             "resource_details": [dict(row) for row in resource_details],
             "chat_md5": chat_md5,
             "month_dir": month_dir,
@@ -50,6 +59,42 @@ class WechatImageLocator:
             "hd_file_path": str(image_dir / f"{file_base}_h.dat"),
         }
         return result
+
+    def recover_image(
+        self,
+        msg_table: str,
+        local_id: int,
+        key32: str,
+        output_dir: Path,
+        preferred_variant: str = "thumb",
+    ) -> dict[str, object]:
+        result = self.find_image_paths(msg_table, local_id)
+
+        variant_map = {
+            "thumb": Path(str(result["thumb_file_path"])),
+            "hd": Path(str(result["hd_file_path"])),
+            "main": Path(str(result["main_file_path"])),
+        }
+        if preferred_variant not in variant_map:
+            raise ValueError(f"unsupported variant: {preferred_variant}")
+
+        dat_path = variant_map[preferred_variant]
+        if not dat_path.exists():
+            raise FileNotFoundError(f"dat file not found: {dat_path}")
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / f"{result['file_base']}_{preferred_variant}.jpg"
+
+        recover_result = recover_wechat_dat(dat_path, key32, output_file)
+        recover_result.update(
+            {
+                "variant": preferred_variant,
+                "output_file": str(output_file),
+                "image_lookup": result,
+            }
+        )
+        return recover_result
 
     def _fetch_message(self, conn: sqlite3.Connection, msg_table: str, local_id: int) -> sqlite3.Row:
         query = f"""
@@ -71,7 +116,7 @@ class WechatImageLocator:
         conn: sqlite3.Connection,
         msg_table: str,
         message: sqlite3.Row,
-    ) -> sqlite3.Row:
+    ) -> sqlite3.Row | None:
         chat_md5 = msg_table.removeprefix("Msg_")
         query = """
             SELECT
@@ -105,11 +150,6 @@ class WechatImageLocator:
                 chat_md5,
             ),
         ).fetchone()
-        if row is None:
-            raise ValueError(
-                "resource info not found for image message: "
-                f"table={msg_table}, local_id={message['local_id']}"
-            )
         return row
 
     def _fetch_resource_details(
