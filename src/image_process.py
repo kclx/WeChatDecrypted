@@ -2,16 +2,36 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-try:
-    from verify_wechat_dat import _WechatDatRecover
-except ModuleNotFoundError:
-    from src.verify_wechat_dat import _WechatDatRecover
+from verify_wechat_dat import _WechatDatRecover
 
 
-class WechatImageRecover:
+@dataclass
+class ImageSummary:
+    msg_table: str
+    local_id: int
+    server_id: int
+    create_time: int
+    month_dir: str
+    file_base: str
+    main_dat_path: str | None
+    thumb_dat_path: str | None
+    hd_dat_path: str | None
+    exported_main_path: str | None
+    exported_thumb_path: str | None
+    exported_hd_path: str | None
+    has_main: bool
+    has_thumb: bool
+    has_hd: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+class WechatImageParser:
     """统一封装消息定位与微信图片 .dat 恢复。"""
 
     def __init__(
@@ -24,7 +44,8 @@ class WechatImageRecover:
         self.message_db_path = Path(message_db_path)
         self.message_resource_db_path = Path(message_resource_db_path)
         self.account_root = Path(account_root)
-        self.dat_recover = _WechatDatRecover(key32)
+        self.key32 = key32
+        self._dat_recoverer: _WechatDatRecover | None = None
 
     def find_image_paths(self, msg_table: str, local_id: int) -> dict[str, object]:
         with sqlite3.connect(self.message_db_path) as conn:
@@ -72,33 +93,84 @@ class WechatImageRecover:
     def recover_hd(self, msg_table: str, local_id: int, output_dir: Path) -> dict[str, object]:
         return self._recover_variant(msg_table, local_id, output_dir, "hd")
 
+    def export_image_assets(self, msg_table: str, local_id: int, output_dir: Path) -> dict[str, str]:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        exported: dict[str, str] = {}
+        for variant in ("main", "thumb", "hd"):
+            try:
+                result = self._recover_variant(
+                    msg_table,
+                    local_id,
+                    output_dir,
+                    variant,
+                    output_stem=f"{msg_table}_{local_id}_{variant}",
+                )
+            except FileNotFoundError:
+                continue
+            exported[variant] = str(result["output_file"])
+        return exported
+
+    def find_image_summary(
+        self,
+        msg_table: str,
+        local_id: int,
+        output_dir: Path | None = None,
+    ) -> ImageSummary:
+        detail = self.find_image_paths(msg_table, local_id)
+        exported = self.export_image_assets(msg_table, local_id, output_dir) if output_dir is not None else {}
+
+        main_dat_path = str(detail["main_file_path"])
+        thumb_dat_path = str(detail["thumb_file_path"])
+        hd_dat_path = str(detail["hd_file_path"])
+        return ImageSummary(
+            msg_table=msg_table,
+            local_id=local_id,
+            server_id=int(detail["message"]["server_id"]),
+            create_time=int(detail["message"]["create_time"]),
+            month_dir=str(detail["month_dir"]),
+            file_base=str(detail["file_base"]),
+            main_dat_path=main_dat_path,
+            thumb_dat_path=thumb_dat_path,
+            hd_dat_path=hd_dat_path,
+            exported_main_path=exported.get("main"),
+            exported_thumb_path=exported.get("thumb"),
+            exported_hd_path=exported.get("hd"),
+            has_main=Path(main_dat_path).exists(),
+            has_thumb=Path(thumb_dat_path).exists(),
+            has_hd=Path(hd_dat_path).exists(),
+        )
+
     def _recover_variant(
         self,
         msg_table: str,
         local_id: int,
         output_dir: Path,
         variant: str,
+        output_stem: str | None = None,
     ) -> dict[str, object]:
         result = self.find_image_paths(msg_table, local_id)
         dat_path = self._select_variant_path(result, variant)
+        dat_recoverer = self._get_dat_recoverer()
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        temp_output = output_dir / f"{result['file_base']}_{variant}.bin"
+        stem = output_stem or f"{result['file_base']}_{variant}"
+        temp_output = output_dir / f"{stem}.bin"
 
-        recover_result = self.dat_recover.recover(dat_path, temp_output)
-        ext = str(recover_result.get("final_type") or "bin")
-        output_file = output_dir / f"{result['file_base']}_{variant}.{ext}"
+        recovery_result = dat_recoverer.recover(dat_path, temp_output)
+        ext = str(recovery_result.get("final_type") or "bin")
+        output_file = output_dir / f"{stem}.{ext}"
         if temp_output != output_file:
             temp_output.replace(output_file)
-        recover_result.update(
+        recovery_result.update(
             {
                 "variant": variant,
                 "output_file": str(output_file),
                 "image_lookup": result,
             }
         )
-        return recover_result
+        return recovery_result
 
     @staticmethod
     def _select_variant_path(result: dict[str, object], variant: str) -> Path:
@@ -226,3 +298,11 @@ class WechatImageRecover:
             """,
             (message_id,),
         ).fetchall()
+
+    def _get_dat_recoverer(self) -> _WechatDatRecover:
+        if self._dat_recoverer is None:
+            self._dat_recoverer = _WechatDatRecover(self.key32)
+        return self._dat_recoverer
+
+
+WechatImageRecover = WechatImageParser

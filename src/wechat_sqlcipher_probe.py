@@ -18,8 +18,9 @@ if result["header_ok"]:
 from __future__ import annotations
 
 import hashlib
-import subprocess
 from pathlib import Path
+
+from Crypto.Cipher import AES
 
 
 SQLITE_HEADER = b"SQLite format 3\x00"
@@ -32,7 +33,7 @@ class WechatSQLCipherProbe:
     不再依赖命令行入口。
 
     常见调用流程：
-    1. 创建实例，按需覆盖 password、salt 或 OpenSSL 路径。
+    1. 创建实例，按需覆盖 password、salt、迭代次数等参数。
     2. 调用 `decrypt_first_page()` 判断数据库是否可正常解密。
     3. 调用 `decrypt_db()` 输出完整的解密后 SQLite 数据库。
     """
@@ -43,7 +44,6 @@ class WechatSQLCipherProbe:
         captured_salt: bytes | None = None,
         rounds: int = 256000,
         key_len: int = 32,
-        openssl_path: str = "/opt/homebrew/bin/openssl",
     ) -> None:
         """初始化探测参数。
 
@@ -52,7 +52,6 @@ class WechatSQLCipherProbe:
             captured_salt: 仅用于比对的预期 salt；解密本身不依赖它。
             rounds: PBKDF2 迭代次数。
             key_len: 派生密钥长度，单位为字节。
-            openssl_path: 执行 AES 解密时使用的 OpenSSL 可执行文件路径。
         """
         if password is None:
             raise ValueError("password is required")
@@ -62,7 +61,6 @@ class WechatSQLCipherProbe:
         self.captured_salt = captured_salt
         self.rounds = rounds
         self.key_len = key_len
-        self.openssl_path = openssl_path
 
     def derive_key(self, salt: bytes) -> bytes:
         """根据数据库 salt 派生 SQLCipher 使用的页面密钥。"""
@@ -70,31 +68,14 @@ class WechatSQLCipherProbe:
             "sha512", self.password, salt, self.rounds, self.key_len
         )
 
-    def openssl_decrypt(self, ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
-        """使用 OpenSSL 解密一段 AES-256-CBC 密文。"""
-        proc = subprocess.run(
-            [
-                self.openssl_path,
-                "enc",
-                "-d",
-                "-aes-256-cbc",
-                "-nopad",
-                "-K",
-                key.hex(),
-                "-iv",
-                iv.hex(),
-            ],
-            input=ciphertext,
-            capture_output=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.decode("utf-8", errors="replace").strip())
-        return proc.stdout
+    def aes_cbc_decrypt(self, ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
+        """使用 PyCryptodome 解密一段 AES-256-CBC 密文。"""
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        return cipher.decrypt(ciphertext)
 
     def decrypt_page(self, ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
         """解密单个数据库页中的有效载荷部分。"""
-        return self.openssl_decrypt(ciphertext, key, iv)
+        return self.aes_cbc_decrypt(ciphertext, key, iv)
 
     def decrypt_first_page(
         self,

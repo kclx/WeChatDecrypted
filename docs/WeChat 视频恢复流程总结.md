@@ -163,7 +163,7 @@ msg/video/<YYYY-MM>/
 - `base_raw.mp4`
 - `base.jpg`
 
-`ffprobe` 结果表明：
+媒体元数据结果表明：
 
 - 播放版视频为 `HEVC / H.265`
 - 分辨率 `1280x720`

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import struct
-import subprocess
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+
+import av
 
 
 @dataclass
@@ -38,6 +39,10 @@ class VideoSummary:
     audio_codec: str | None
     audio_bit_rate: str | None
     play_raw_diff: dict[str, object] | None
+    exported_play_path: str | None = None
+    exported_raw_path: str | None = None
+    exported_thumb_path: str | None = None
+    exported_poster_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -98,12 +103,12 @@ class WechatVideoParser:
             else {}
         )
 
-        file_inspect = {}
+        file_inspection = {}
         for key, path in candidate_paths.items():
-            file_inspect[key] = self.inspect_file(path)
+            file_inspection[key] = self.inspect_media_file(path)
 
         preferred_paths = self._pick_preferred_paths(candidate_paths)
-        variant_summary = self._summarize_variants(preferred_paths, file_inspect)
+        variant_summary = self._summarize_variants(preferred_paths, file_inspection)
 
         return {
             "message": dict(message),
@@ -124,29 +129,64 @@ class WechatVideoParser:
                 key: str(path) for key, path in candidate_paths.items() if Path(path).exists()
             },
             "preferred_paths": {key: str(path) for key, path in preferred_paths.items() if path is not None},
-            "file_inspect": file_inspect,
+            "file_inspection": file_inspection,
+            "file_inspect": file_inspection,
             "variant_summary": variant_summary,
         }
 
-    def find_video_summary(self, msg_table: str, local_id: int) -> VideoSummary:
+    def export_video_assets(self, msg_table: str, local_id: int, output_dir: Path) -> dict[str, str]:
+        detail = self.find_video_paths(msg_table, local_id)
+        preferred_paths = detail["preferred_paths"]
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        base_name = f"{msg_table}_{local_id}"
+        exported: dict[str, str] = {}
+        variants = {
+            "play": preferred_paths.get("play"),
+            "raw": preferred_paths.get("raw"),
+            "thumb": preferred_paths.get("thumb"),
+            "poster": preferred_paths.get("poster"),
+        }
+        for variant, source in variants.items():
+            if not source:
+                continue
+            src = Path(source)
+            if not src.exists():
+                continue
+            target = output_dir / f"{base_name}{src.suffix}"
+            if variant in {"thumb", "poster"} and src.suffix.lower() == ".jpg":
+                target = output_dir / f"{base_name}_{variant}.jpg"
+            elif variant == "raw":
+                target = output_dir / f"{base_name}_raw{src.suffix}"
+            shutil.copy2(src, target)
+            exported[variant] = str(target)
+        return exported
+
+    def find_video_summary(
+        self,
+        msg_table: str,
+        local_id: int,
+        output_dir: Path | None = None,
+    ) -> VideoSummary:
         detail = self.find_video_paths(msg_table, local_id)
         message = detail["message"]
         preferred_paths = detail["preferred_paths"]
         variant_summary = detail["variant_summary"]
         resource_roles = detail["resource_roles"]
-        file_inspect = detail["file_inspect"]
+        file_inspection = detail["file_inspection"]
 
         play_path = preferred_paths.get("play")
         raw_path = preferred_paths.get("raw")
         thumb_path = preferred_paths.get("thumb")
         poster_path = preferred_paths.get("poster")
 
-        play_info = self._lookup_inspect(Path(play_path), file_inspect) if play_path else None
-        raw_info = self._lookup_inspect(Path(raw_path), file_inspect) if raw_path else None
+        play_info = self._find_inspection_result(Path(play_path), file_inspection) if play_path else None
+        raw_info = self._find_inspection_result(Path(raw_path), file_inspection) if raw_path else None
 
         best_video_info = play_info or raw_info
         best_probe = (
-            best_video_info.get("ffprobe")
+            best_video_info.get("media_metadata")
             if isinstance(best_video_info, dict)
             else None
         )
@@ -161,6 +201,7 @@ class WechatVideoParser:
             else None
         )
         best_format = best_probe.get("format", {}) if isinstance(best_probe, dict) else {}
+        exported = self.export_video_assets(msg_table, local_id, output_dir) if output_dir is not None else {}
 
         return VideoSummary(
             msg_table=msg_table,
@@ -190,9 +231,13 @@ class WechatVideoParser:
             audio_codec=None if best_audio_stream is None else best_audio_stream.get("codec_name"),
             audio_bit_rate=None if best_audio_stream is None else best_audio_stream.get("bit_rate"),
             play_raw_diff=variant_summary.get("play_vs_raw"),
+            exported_play_path=exported.get("play"),
+            exported_raw_path=exported.get("raw"),
+            exported_thumb_path=exported.get("thumb"),
+            exported_poster_path=exported.get("poster"),
         )
 
-    def inspect_file(self, path: Path) -> dict[str, object]:
+    def inspect_media_file(self, path: Path) -> dict[str, object]:
         path = Path(path)
         if not path.exists():
             return {
@@ -220,8 +265,12 @@ class WechatVideoParser:
             info["mp4_tail_moov_offset"] = self._find_tail_box(tail, "moov", file_size)
             info["mp4_tail_mdat_offset"] = self._find_tail_box(tail, "mdat", file_size)
             info["mp4_layout"] = self._classify_mp4_layout(info["mp4_head_boxes"], info["mp4_tail_moov_offset"])
-            info["ffprobe"] = self._ffprobe(path)
+            info["media_metadata"] = self._probe_media_metadata(path)
+            info["ffprobe"] = info["media_metadata"]
         return info
+
+    def inspect_file(self, path: Path) -> dict[str, object]:
+        return self.inspect_media_file(path)
 
     @staticmethod
     def _build_candidate_paths(
@@ -489,36 +538,36 @@ class WechatVideoParser:
     def _summarize_variants(
         cls,
         preferred_paths: dict[str, Path | None],
-        file_inspect: dict[str, dict[str, object]],
+        file_inspection: dict[str, dict[str, object]],
     ) -> dict[str, object]:
         play_path = preferred_paths.get("play")
         raw_path = preferred_paths.get("raw")
-        play_info = cls._lookup_inspect(play_path, file_inspect)
-        raw_info = cls._lookup_inspect(raw_path, file_inspect)
+        play_info = cls._find_inspection_result(play_path, file_inspection)
+        raw_info = cls._find_inspection_result(raw_path, file_inspection)
         return {
             "has_play": play_info is not None,
             "has_raw": raw_info is not None,
             "has_dual_mp4": play_info is not None and raw_info is not None,
             "play_layout": None if play_info is None else play_info.get("mp4_layout"),
             "raw_layout": None if raw_info is None else raw_info.get("mp4_layout"),
-            "play_vs_raw": cls._diff_ffprobe(play_info, raw_info),
+            "play_vs_raw": cls._diff_media_metadata(play_info, raw_info),
         }
 
     @staticmethod
-    def _lookup_inspect(
+    def _find_inspection_result(
         path: Path | None,
-        file_inspect: dict[str, dict[str, object]],
+        file_inspection: dict[str, dict[str, object]],
     ) -> dict[str, object] | None:
         if path is None:
             return None
         path_str = str(path)
-        for info in file_inspect.values():
+        for info in file_inspection.values():
             if info.get("path") == path_str and info.get("exists"):
                 return info
         return None
 
     @classmethod
-    def _diff_ffprobe(
+    def _diff_media_metadata(
         cls,
         play_info: dict[str, object] | None,
         raw_info: dict[str, object] | None,
@@ -526,8 +575,8 @@ class WechatVideoParser:
         if play_info is None or raw_info is None:
             return None
 
-        play_probe = play_info.get("ffprobe")
-        raw_probe = raw_info.get("ffprobe")
+        play_probe = play_info.get("media_metadata")
+        raw_probe = raw_info.get("media_metadata")
         if not isinstance(play_probe, dict) or not isinstance(raw_probe, dict):
             return None
 
@@ -557,8 +606,8 @@ class WechatVideoParser:
         }
 
     @staticmethod
-    def _select_stream(ffprobe_info: dict[str, object], codec_type: str) -> dict[str, object] | None:
-        streams = ffprobe_info.get("streams")
+    def _select_stream(media_metadata: dict[str, object], codec_type: str) -> dict[str, object] | None:
+        streams = media_metadata.get("streams")
         if not isinstance(streams, list):
             return None
         for stream in streams:
@@ -578,27 +627,49 @@ class WechatVideoParser:
         return num / den
 
     @staticmethod
-    def _ffprobe(path: Path) -> dict[str, object] | None:
+    def _probe_media_metadata(path: Path) -> dict[str, object] | None:
         try:
-            result = subprocess.run(
-                [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-print_format",
-                    "json",
-                    "-show_format",
-                    "-show_streams",
-                    str(path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            return None
+            with av.open(str(path), mode="r") as container:
+                streams: list[dict[str, object]] = []
+                for stream in container.streams:
+                    codec_context = stream.codec_context
+                    stream_info: dict[str, object] = {
+                        "index": stream.index,
+                        "codec_type": stream.type,
+                        "codec_name": codec_context.name,
+                        "profile": codec_context.profile,
+                        "bit_rate": codec_context.bit_rate,
+                    }
+                    if stream.type == "video":
+                        stream_info.update(
+                            {
+                                "width": codec_context.width,
+                                "height": codec_context.height,
+                                "avg_frame_rate": (
+                                    None if stream.average_rate is None else str(stream.average_rate)
+                                ),
+                            }
+                        )
+                    elif stream.type == "audio":
+                        stream_info.update(
+                            {
+                                "sample_rate": codec_context.sample_rate,
+                                "channels": codec_context.channels,
+                            }
+                        )
+                    streams.append(stream_info)
 
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
+                duration = None
+                if container.duration is not None:
+                    duration = str(container.duration / av.time_base)
+
+                bit_rate = container.bit_rate
+                return {
+                    "format": {
+                        "duration": duration,
+                        "bit_rate": None if bit_rate is None else str(bit_rate),
+                    },
+                    "streams": streams,
+                }
+        except (FileNotFoundError, av.FFmpegError, OSError):
             return None
