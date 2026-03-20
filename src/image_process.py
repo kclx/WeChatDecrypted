@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from verify_wechat_dat import _WechatDatRecover
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = PROJECT_ROOT / ".env"
+DEFAULT_DECRYPTED_DB_DIR = PROJECT_ROOT / "data" / "db" / "decrypted"
+DEFAULT_DECRYPTED_DB_DIR_ALT = PROJECT_ROOT / "data" / "db" / "dec"
 
 
 @dataclass
@@ -46,6 +55,28 @@ class WechatImageParser:
         self.account_root = Path(account_root)
         self.key32 = key32
         self._dat_recoverer: _WechatDatRecover | None = None
+
+    @classmethod
+    def from_env(cls) -> WechatImageParser:
+        load_dotenv(ENV_PATH)
+        decrypted_db_dir = (
+            DEFAULT_DECRYPTED_DB_DIR
+            if DEFAULT_DECRYPTED_DB_DIR.exists()
+            else DEFAULT_DECRYPTED_DB_DIR_ALT
+        )
+        return cls(
+            message_db_path=Path(
+                os.getenv("MESSAGE_DB_PATH", str(decrypted_db_dir / "message_0.db"))
+            ).expanduser(),
+            message_resource_db_path=Path(
+                os.getenv(
+                    "MESSAGE_RESOURCE_DB_PATH",
+                    str(decrypted_db_dir / "message_resource.db"),
+                )
+            ).expanduser(),
+            account_root=Path(os.environ["WECHAT_ROOT"]).expanduser(),
+            key32=os.environ["KEY32"],
+        )
 
     def find_image_paths(self, msg_table: str, local_id: int) -> dict[str, object]:
         with sqlite3.connect(self.message_db_path) as conn:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import struct
 import shutil
@@ -8,6 +9,13 @@ from datetime import datetime
 from pathlib import Path
 
 import av
+from dotenv import load_dotenv
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = PROJECT_ROOT / ".env"
+DEFAULT_DECRYPTED_DB_DIR = PROJECT_ROOT / "data" / "db" / "decrypted"
+DEFAULT_DECRYPTED_DB_DIR_ALT = PROJECT_ROOT / "data" / "db" / "dec"
 
 
 @dataclass
@@ -64,6 +72,30 @@ class WechatVideoParser:
         self.message_resource_db_path = Path(message_resource_db_path)
         self.hardlink_db_path = Path(hardlink_db_path)
         self.account_root = Path(account_root) if account_root is not None else None
+
+    @classmethod
+    def from_env(cls) -> WechatVideoParser:
+        load_dotenv(ENV_PATH)
+        decrypted_db_dir = (
+            DEFAULT_DECRYPTED_DB_DIR
+            if DEFAULT_DECRYPTED_DB_DIR.exists()
+            else DEFAULT_DECRYPTED_DB_DIR_ALT
+        )
+        return cls(
+            message_db_path=Path(
+                os.getenv("MESSAGE_DB_PATH", str(decrypted_db_dir / "message_0.db"))
+            ).expanduser(),
+            message_resource_db_path=Path(
+                os.getenv(
+                    "MESSAGE_RESOURCE_DB_PATH",
+                    str(decrypted_db_dir / "message_resource.db"),
+                )
+            ).expanduser(),
+            hardlink_db_path=Path(
+                os.getenv("HARDLINK_DB_PATH", str(decrypted_db_dir / "hardlink.db"))
+            ).expanduser(),
+            account_root=Path(os.environ["WECHAT_ROOT"]).expanduser(),
+        )
 
     def find_video_paths(self, msg_table: str, local_id: int) -> dict[str, object]:
         with sqlite3.connect(self.message_db_path) as conn:

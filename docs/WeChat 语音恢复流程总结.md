@@ -143,7 +143,7 @@ Msg_xxx_<local_id>.silk
 
 ### 3. SILK 解码
 
-若已配置 `silk_decoder_path`，则继续解码为：
+当前实现直接使用 Python 包 `pysilk` 解码为：
 
 ```text
 Msg_xxx_<local_id>.pcm
@@ -153,7 +153,7 @@ Msg_xxx_<local_id>.pcm
 
 ### 4. PCM 转 WAV
 
-当前实现再用 `ffmpeg` 将 `.pcm` 转为：
+当前实现再使用 Python 标准库 `wave` 将 `.pcm` 转为：
 
 ```text
 Msg_xxx_<local_id>.wav
@@ -218,7 +218,6 @@ from voice_process import WechatVoiceParser
 parser = WechatVoiceParser(
     message_db_path=Path("data/db/decrypted/message_0.db"),
     media_db_path=Path("data/db/decrypted/media_0.db"),
-    silk_decoder_path=Path("/path/to/python-silk-decoder"),
 )
 
 summary = parser.find_voice_summary(
@@ -246,7 +245,6 @@ manager = WechatMediaManager(
     hardlink_db_path=Path("data/db/decrypted/hardlink.db"),
     account_root=Path("/path/to/xwechat_files/<account_id>"),
     key32="<32_char_ascii_key>",
-    silk_decoder_path=Path("/path/to/python-silk-decoder"),
 )
 
 summary = manager.find_voice_summary(

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+import os
 import struct
 import zlib
 from pathlib import Path
 
 import av
 from Crypto.Cipher import AES
+from dotenv import load_dotenv
 
 
 HEADER_LEN = 15
@@ -18,6 +20,8 @@ GIF_MAGIC = b"GIF8"
 BMP_MAGIC = b"BM"
 TIFF_LE_MAGIC = b"II*\x00"
 TIFF_BE_MAGIC = b"MM\x00*"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = PROJECT_ROOT / ".env"
 
 
 class _WechatDatRecover:
@@ -319,3 +323,11 @@ class _WechatDatRecover:
 
 def recover_wechat_dat(dat_file: Path, key32: str, output: Path | None = None) -> dict[str, object]:
     return _WechatDatRecover(key32).recover(dat_file, output)
+
+
+def recover_wechat_dat_from_env(
+    dat_file: Path,
+    output: Path | None = None,
+) -> dict[str, object]:
+    load_dotenv(ENV_PATH)
+    return recover_wechat_dat(dat_file, os.environ["KEY32"], output)

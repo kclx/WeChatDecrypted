@@ -9,5 +9,6 @@ dependencies = [
     "pandas>=2.3.3",
     "pillow>=12.1.1",
     "pycryptodome>=3.23.0",
+    "python-dotenv>=1.2.2",
     "silk-python>=0.2.8",
 ]

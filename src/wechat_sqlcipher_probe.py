@@ -18,12 +18,16 @@ if result["header_ok"]:
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 from Crypto.Cipher import AES
+from dotenv import load_dotenv
 
 
 SQLITE_HEADER = b"SQLite format 3\x00"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = PROJECT_ROOT / ".env"
 
 
 class WechatSQLCipherProbe:
@@ -62,10 +66,24 @@ class WechatSQLCipherProbe:
         self.rounds = rounds
         self.key_len = key_len
 
+    @classmethod
+    def from_env(cls) -> WechatSQLCipherProbe:
+        load_dotenv(ENV_PATH)
+        return cls(
+            password=bytes.fromhex(
+                f"{os.environ['PASSWORD_1'].strip()}{os.environ['PASSWORD_2'].strip()}"
+            ),
+            captured_salt=bytes.fromhex(os.environ["CAPTURED_SALT"].strip()),
+        )
+
     def derive_key(self, salt: bytes) -> bytes:
         """根据数据库 salt 派生 SQLCipher 使用的页面密钥。"""
         return hashlib.pbkdf2_hmac(
-            "sha512", self.password, salt, self.rounds, self.key_len
+            "sha512",
+            self.password,
+            salt,
+            self.rounds,
+            self.key_len,
         )
 
     def aes_cbc_decrypt(self, ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
@@ -131,6 +149,10 @@ class WechatSQLCipherProbe:
         返回值：
             返回本次解密使用的派生密钥。
         """
+        probe_result = self.decrypt_first_page(db_path, page_size=page_size, reserve=reserve)
+        if not probe_result["header_ok"]:
+            raise ValueError(f"failed to decrypt first page: {db_path}")
+
         raw = db_path.read_bytes()
         if len(raw) % page_size:
             raise ValueError(

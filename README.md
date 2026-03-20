@@ -1,5 +1,19 @@
 # 微信数据库解密指南
 
+## 环境变量
+
+项目根目录提供了 `.env.example`。
+
+使用前先复制为 `.env`，再填入你自己的：
+
+- `WECHAT_ROOT`
+- `KEY32`
+- `CAPTURED_SALT`
+- `PASSWORD_1`
+- `PASSWORD_2`
+
+如果使用代码里的 `from_env()` 构造实例，类会自动 `load_dotenv()` 并从 `.env` 读取这些值。
+
 ## 文档目标
 
 本文用于说明如何在 macOS 环境下定位、识别、分析并离线解密桌面版微信数据库。内容覆盖以下几个方面：
@@ -378,9 +392,7 @@ from wechat_sqlcipher_probe import WechatSQLCipherProbe
 
 
 probe = WechatSQLCipherProbe(
-    password=bytes.fromhex(
-        "<请填入你自己提取到的 password hex>"
-    ),
+    password=bytes.fromhex(os.getenv("PASSWORD_1") + os.getenv("PASSWORD_2")),
     captured_salt=bytes.fromhex("<请填入你自己提取到的 salt hex>"),
 )
 

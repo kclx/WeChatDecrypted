@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import wave
 from dataclasses import asdict, dataclass
@@ -8,9 +9,14 @@ from datetime import datetime
 from pathlib import Path
 
 import pysilk
+from dotenv import load_dotenv
 
 
 SILK_MAGIC = b"#!SILK_V3"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = PROJECT_ROOT / ".env"
+DEFAULT_DECRYPTED_DB_DIR = PROJECT_ROOT / "data" / "db" / "decrypted"
+DEFAULT_DECRYPTED_DB_DIR_ALT = PROJECT_ROOT / "data" / "db" / "dec"
 
 
 @dataclass
@@ -43,12 +49,25 @@ class WechatVoiceParser:
         self,
         message_db_path: Path,
         media_db_path: Path,
-        silk_decoder_path: Path | None = None,
     ) -> None:
         self.message_db_path = Path(message_db_path)
         self.media_db_path = Path(media_db_path)
-        self._legacy_silk_decoder_path = (
-            None if silk_decoder_path is None else Path(silk_decoder_path)
+
+    @classmethod
+    def from_env(cls) -> WechatVoiceParser:
+        load_dotenv(ENV_PATH)
+        decrypted_db_dir = (
+            DEFAULT_DECRYPTED_DB_DIR
+            if DEFAULT_DECRYPTED_DB_DIR.exists()
+            else DEFAULT_DECRYPTED_DB_DIR_ALT
+        )
+        return cls(
+            message_db_path=Path(
+                os.getenv("MESSAGE_DB_PATH", str(decrypted_db_dir / "message_0.db"))
+            ).expanduser(),
+            media_db_path=Path(
+                os.getenv("MEDIA_DB_PATH", str(decrypted_db_dir / "media_0.db"))
+            ).expanduser(),
         )
 
     def find_voice_paths(self, msg_table: str, local_id: int) -> dict[str, object]:
