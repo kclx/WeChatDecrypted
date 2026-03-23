@@ -334,6 +334,3 @@ class WechatImageParser:
         if self._dat_recoverer is None:
             self._dat_recoverer = _WechatDatRecover(self.key32)
         return self._dat_recoverer
-
-
-WechatImageRecover = WechatImageParser
