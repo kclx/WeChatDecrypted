@@ -1,3 +1,5 @@
+"""统一封装 OpenAI 与 Gemini 的聊天、视觉和语音能力。"""
+
 from __future__ import annotations
 
 import base64
@@ -10,12 +12,11 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
-
 DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_VISION_MODEL = "gpt-4o-mini"
 DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
+DEFAULT_GOOGLE_CHAT_MODEL = "gemini-2.5-flash"
+DEFAULT_GOOGLE_VISION_MODEL = "gemini-2.5-flash"
 DEFAULT_GOOGLE_TRANSCRIPTION_MODEL = "gemini-3-flash-preview"
 
 
@@ -124,6 +125,8 @@ class GoogleAIAdapter:
         self,
         api_key: str,
         *,
+        chat_model: str = DEFAULT_GOOGLE_CHAT_MODEL,
+        vision_model: str = DEFAULT_GOOGLE_VISION_MODEL,
         transcription_model: str = DEFAULT_GOOGLE_TRANSCRIPTION_MODEL,
     ) -> None:
         api_key = api_key.strip()
@@ -133,7 +136,25 @@ class GoogleAIAdapter:
             api_key=api_key,
             http_options=types.HttpOptions(api_version="v1alpha", timeout=120_000),
         )
+        self.chat_model = chat_model
+        self.vision_model = vision_model
         self.transcription_model = transcription_model
+
+    def chat(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        model: str | None = None,
+    ) -> str:
+        merged_prompt = prompt.strip()
+        if system_prompt:
+            merged_prompt = f"{system_prompt.strip()}\n\n{merged_prompt}"
+        response = self.client.models.generate_content(
+            model=model or self.chat_model,
+            contents=merged_prompt,
+        )
+        return (response.text or "").strip()
 
     def transcribe_audio(
         self,
@@ -190,7 +211,7 @@ class GoogleAIAdapter:
 
         uploaded_file = self.client.files.upload(file=str(image_path))
         response = self.client.models.generate_content(
-            model=model or self.transcription_model,
+            model=model or self.vision_model,
             contents=[
                 prompt,
                 types.Part.from_uri(
@@ -233,7 +254,7 @@ class WechatAIClient:
 
     @classmethod
     def from_env(cls) -> "WechatAIClient":
-        load_dotenv(ENV_PATH)
+        load_dotenv()
         openai_adapter = None
         google_adapter = None
 
@@ -248,6 +269,10 @@ class WechatAIClient:
         if os.getenv("GOOGLE_API_KEY", "").strip():
             google_adapter = GoogleAIAdapter(
                 api_key=os.getenv("GOOGLE_API_KEY", ""),
+                chat_model=os.getenv("GOOGLE_CHAT_MODEL", DEFAULT_GOOGLE_CHAT_MODEL),
+                vision_model=os.getenv(
+                    "GOOGLE_VISION_MODEL", DEFAULT_GOOGLE_VISION_MODEL
+                ),
                 transcription_model=DEFAULT_GOOGLE_TRANSCRIPTION_MODEL,
             )
 
@@ -264,15 +289,21 @@ class WechatAIClient:
         model_spec: str | None = None,
     ) -> str:
         provider, model = self._parse_model_spec(model_spec)
-        if provider not in {None, "OPENAI"}:
-            raise ValueError(f"unsupported chat provider: {provider}")
-        if self.openai_adapter is None:
-            raise ValueError("OpenAI adapter is not configured")
-        return self.openai_adapter.chat(
-            prompt,
-            system_prompt=system_prompt,
-            model=model,
-        )
+        if provider in {None, "OPENAI"} and self.openai_adapter is not None:
+            return self.openai_adapter.chat(
+                prompt,
+                system_prompt=system_prompt,
+                model=model,
+            )
+        if provider in {None, "GOOGLE", "GEMINI"} and self.google_adapter is not None:
+            return self.google_adapter.chat(
+                prompt,
+                system_prompt=system_prompt,
+                model=model,
+            )
+        if provider in {"GOOGLE", "GEMINI"}:
+            raise ValueError("Google adapter is not configured")
+        raise ValueError("No chat adapter is configured")
 
     def describe_image(
         self,

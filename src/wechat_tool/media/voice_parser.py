@@ -1,3 +1,5 @@
+"""微信语音消息定位、导出与 Silk 解码能力。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -13,12 +15,6 @@ from dotenv import load_dotenv
 
 
 SILK_MAGIC = b"#!SILK_V3"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
-DEFAULT_DECRYPTED_DB_DIR = PROJECT_ROOT / "data" / "db" / "decrypted"
-DEFAULT_DECRYPTED_DB_DIR_ALT = PROJECT_ROOT / "data" / "db" / "dec"
-
-
 @dataclass
 class VoiceSummary:
     msg_table: str
@@ -55,11 +51,11 @@ class WechatVoiceParser:
 
     @classmethod
     def from_env(cls) -> WechatVoiceParser:
-        load_dotenv(ENV_PATH)
+        load_dotenv()
         decrypted_db_dir = (
-            DEFAULT_DECRYPTED_DB_DIR
-            if DEFAULT_DECRYPTED_DB_DIR.exists()
-            else DEFAULT_DECRYPTED_DB_DIR_ALT
+            Path("data/db/decrypted")
+            if Path("data/db/decrypted").exists()
+            else Path("data/db/dec")
         )
         return cls(
             message_db_path=Path(

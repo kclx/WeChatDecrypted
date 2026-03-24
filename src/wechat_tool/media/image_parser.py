@@ -1,3 +1,5 @@
+"""微信图片消息定位与 dat 恢复能力。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -9,14 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from verify_wechat_dat import _WechatDatRecover
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
-DEFAULT_DECRYPTED_DB_DIR = PROJECT_ROOT / "data" / "db" / "decrypted"
-DEFAULT_DECRYPTED_DB_DIR_ALT = PROJECT_ROOT / "data" / "db" / "dec"
-
+from src.wechat_tool.media.dat_recover import _WechatDatRecover
 
 @dataclass
 class ImageSummary:
@@ -58,11 +53,11 @@ class WechatImageParser:
 
     @classmethod
     def from_env(cls) -> WechatImageParser:
-        load_dotenv(ENV_PATH)
+        load_dotenv()
         decrypted_db_dir = (
-            DEFAULT_DECRYPTED_DB_DIR
-            if DEFAULT_DECRYPTED_DB_DIR.exists()
-            else DEFAULT_DECRYPTED_DB_DIR_ALT
+            Path("data/db/decrypted")
+            if Path("data/db/decrypted").exists()
+            else Path("data/db/dec")
         )
         return cls(
             message_db_path=Path(
@@ -115,16 +110,24 @@ class WechatImageParser:
             "hd_file_path": str(image_dir / f"{file_base}_h.dat"),
         }
 
-    def recover_thumb(self, msg_table: str, local_id: int, output_dir: Path) -> dict[str, object]:
+    def recover_thumb(
+        self, msg_table: str, local_id: int, output_dir: Path
+    ) -> dict[str, object]:
         return self._recover_variant(msg_table, local_id, output_dir, "thumb")
 
-    def recover_main(self, msg_table: str, local_id: int, output_dir: Path) -> dict[str, object]:
+    def recover_main(
+        self, msg_table: str, local_id: int, output_dir: Path
+    ) -> dict[str, object]:
         return self._recover_variant(msg_table, local_id, output_dir, "main")
 
-    def recover_hd(self, msg_table: str, local_id: int, output_dir: Path) -> dict[str, object]:
+    def recover_hd(
+        self, msg_table: str, local_id: int, output_dir: Path
+    ) -> dict[str, object]:
         return self._recover_variant(msg_table, local_id, output_dir, "hd")
 
-    def export_image_assets(self, msg_table: str, local_id: int, output_dir: Path) -> dict[str, str]:
+    def export_image_assets(
+        self, msg_table: str, local_id: int, output_dir: Path
+    ) -> dict[str, str]:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         exported: dict[str, str] = {}
@@ -149,7 +152,11 @@ class WechatImageParser:
         output_dir: Path | None = None,
     ) -> ImageSummary:
         detail = self.find_image_paths(msg_table, local_id)
-        exported = self.export_image_assets(msg_table, local_id, output_dir) if output_dir is not None else {}
+        exported = (
+            self.export_image_assets(msg_table, local_id, output_dir)
+            if output_dir is not None
+            else {}
+        )
 
         main_dat_path = str(detail["main_file_path"])
         thumb_dat_path = str(detail["thumb_file_path"])
@@ -252,7 +259,9 @@ class WechatImageParser:
             value = value.encode("utf-8")
         return hashlib.md5(value).digest()
 
-    def _fetch_message(self, conn: sqlite3.Connection, msg_table: str, local_id: int) -> sqlite3.Row:
+    def _fetch_message(
+        self, conn: sqlite3.Connection, msg_table: str, local_id: int
+    ) -> sqlite3.Row:
         query = f"""
             SELECT local_id, server_id, local_type, real_sender_id, create_time, packed_info_data
             FROM [{msg_table}]
@@ -260,7 +269,9 @@ class WechatImageParser:
         """
         row = conn.execute(query, (local_id,)).fetchone()
         if row is None:
-            raise ValueError(f"message not found: table={msg_table}, local_id={local_id}")
+            raise ValueError(
+                f"message not found: table={msg_table}, local_id={local_id}"
+            )
         if row["local_type"] != 3:
             raise ValueError(
                 f"message is not an image: table={msg_table}, local_id={local_id}, local_type={row['local_type']}"

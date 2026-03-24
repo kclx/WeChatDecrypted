@@ -26,9 +26,6 @@ from dotenv import load_dotenv
 
 
 SQLITE_HEADER = b"SQLite format 3\x00"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
-
 
 class WechatSQLCipherProbe:
     """微信数据库的 SQLCipher 探测与解密工具类。
@@ -68,7 +65,7 @@ class WechatSQLCipherProbe:
 
     @classmethod
     def from_env(cls) -> WechatSQLCipherProbe:
-        load_dotenv(ENV_PATH)
+        load_dotenv()
         return cls(
             password=bytes.fromhex(
                 f"{os.environ['PASSWORD_1'].strip()}{os.environ['PASSWORD_2'].strip()}"

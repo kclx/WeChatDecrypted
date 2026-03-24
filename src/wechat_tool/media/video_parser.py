@@ -1,3 +1,5 @@
+"""微信视频消息定位、本地文件探测与导出能力。"""
+
 from __future__ import annotations
 
 import os
@@ -10,12 +12,6 @@ from pathlib import Path
 
 import av
 from dotenv import load_dotenv
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
-DEFAULT_DECRYPTED_DB_DIR = PROJECT_ROOT / "data" / "db" / "decrypted"
-DEFAULT_DECRYPTED_DB_DIR_ALT = PROJECT_ROOT / "data" / "db" / "dec"
 
 
 @dataclass
@@ -75,11 +71,11 @@ class WechatVideoParser:
 
     @classmethod
     def from_env(cls) -> WechatVideoParser:
-        load_dotenv(ENV_PATH)
+        load_dotenv()
         decrypted_db_dir = (
-            DEFAULT_DECRYPTED_DB_DIR
-            if DEFAULT_DECRYPTED_DB_DIR.exists()
-            else DEFAULT_DECRYPTED_DB_DIR_ALT
+            Path("data/db/decrypted")
+            if Path("data/db/decrypted").exists()
+            else Path("data/db/dec")
         )
         return cls(
             message_db_path=Path(

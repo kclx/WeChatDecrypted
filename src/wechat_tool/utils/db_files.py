@@ -1,3 +1,5 @@
+"""数据库文件收集、复制与批量解密辅助函数。"""
+
 from __future__ import annotations
 
 import shutil

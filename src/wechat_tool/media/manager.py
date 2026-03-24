@@ -1,3 +1,5 @@
+"""统一装配图片、视频与语音解析器的媒体管理服务。"""
+
 from __future__ import annotations
 
 import os
@@ -6,15 +8,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from image_process import WechatImageParser
-from video_process import WechatVideoParser
-from voice_process import WechatVoiceParser
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
-DEFAULT_DECRYPTED_DB_DIR = PROJECT_ROOT / "data" / "db" / "decrypted"
-DEFAULT_DECRYPTED_DB_DIR_ALT = PROJECT_ROOT / "data" / "db" / "dec"
+from src.wechat_tool.media.image_parser import WechatImageParser
+from src.wechat_tool.media.video_parser import WechatVideoParser
+from src.wechat_tool.media.voice_parser import WechatVoiceParser
 
 
 class WechatMediaManager:
@@ -29,13 +25,23 @@ class WechatMediaManager:
         hardlink_db_path: Path | None = None,
         key32: str | None = None,
     ) -> None:
-        self.message_db_path = Path(message_db_path)
-        self.account_root = Path(account_root)
+        if message_db_path:
+            self.message_db_path = message_db_path
+        else:
+            self.message_db_path = Path(
+                os.getenv("MESSAGE_DB_PATH"), "data/db/dec/message_0.db"
+            )
+        if account_root:
+            self.account_root = account_root
+        else:
+            self.account_root = Path(os.getenv("WECHAT_ROOT"))
         self.message_resource_db_path = (
             None if message_resource_db_path is None else Path(message_resource_db_path)
         )
         self.media_db_path = None if media_db_path is None else Path(media_db_path)
-        self.hardlink_db_path = None if hardlink_db_path is None else Path(hardlink_db_path)
+        self.hardlink_db_path = (
+            None if hardlink_db_path is None else Path(hardlink_db_path)
+        )
         self.key32 = key32
 
         self._image_parser: WechatImageParser | None = None
@@ -44,11 +50,11 @@ class WechatMediaManager:
 
     @classmethod
     def from_env(cls) -> WechatMediaManager:
-        load_dotenv(ENV_PATH)
+        load_dotenv()
         decrypted_db_dir = (
-            DEFAULT_DECRYPTED_DB_DIR
-            if DEFAULT_DECRYPTED_DB_DIR.exists()
-            else DEFAULT_DECRYPTED_DB_DIR_ALT
+            Path("data/db/decrypted")
+            if Path("data/db/decrypted").exists()
+            else Path("data/db/dec")
         )
         return cls(
             message_db_path=Path(
@@ -87,7 +93,9 @@ class WechatMediaManager:
             except FileNotFoundError:
                 continue
 
-        raise FileNotFoundError(f"no image asset found: table={msg_table}, local_id={local_id}")
+        raise FileNotFoundError(
+            f"no image asset found: table={msg_table}, local_id={local_id}"
+        )
 
     def export_video(self, msg_table: str, local_id: int, output_dir: Path) -> str:
         detail = self.video.find_video_paths(msg_table, local_id)
@@ -99,7 +107,9 @@ class WechatMediaManager:
             or preferred_paths.get("thumb")
         )
         if not source:
-            raise FileNotFoundError(f"no video asset found: table={msg_table}, local_id={local_id}")
+            raise FileNotFoundError(
+                f"no video asset found: table={msg_table}, local_id={local_id}"
+            )
 
         src = Path(source)
         if not src.exists():
@@ -123,7 +133,9 @@ class WechatMediaManager:
             or exported.get("voice_data_path")
         )
         if not preferred_output:
-            raise FileNotFoundError(f"no voice asset found: table={msg_table}, local_id={local_id}")
+            raise FileNotFoundError(
+                f"no voice asset found: table={msg_table}, local_id={local_id}"
+            )
 
         preferred_path = Path(str(preferred_output))
         if not preferred_path.exists():
@@ -159,7 +171,9 @@ class WechatMediaManager:
     def image(self) -> WechatImageParser:
         if self._image_parser is None:
             if self.message_resource_db_path is None or self.key32 is None:
-                raise ValueError("image manager requires message_resource_db_path and key32")
+                raise ValueError(
+                    "image manager requires message_resource_db_path and key32"
+                )
             self._image_parser = WechatImageParser(
                 message_db_path=self.message_db_path,
                 message_resource_db_path=self.message_resource_db_path,
@@ -172,7 +186,9 @@ class WechatMediaManager:
     def video(self) -> WechatVideoParser:
         if self._video_parser is None:
             if self.message_resource_db_path is None or self.hardlink_db_path is None:
-                raise ValueError("video manager requires message_resource_db_path and hardlink_db_path")
+                raise ValueError(
+                    "video manager requires message_resource_db_path and hardlink_db_path"
+                )
             self._video_parser = WechatVideoParser(
                 message_db_path=self.message_db_path,
                 message_resource_db_path=self.message_resource_db_path,

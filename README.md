@@ -1,441 +1,312 @@
-# 微信数据库解密指南
+# WeiChatTool
 
-## 环境变量
+一个面向本地微信数据的工具集，当前主要提供四类能力：
 
-项目根目录提供了 `.env.example`。
+- 解密并探测微信数据库
+- 导出单个联系人的处理后聊天记录
+- 基于聊天记录生成“我 / 对方”双向画像
+- 基于画像库进行终端问答
 
-使用前先复制为 `.env`，再填入你自己的：
+项目代码已经按职责拆分为两层：
+
+- 业务实现放在 [`src/wechat_tool`](src/wechat_tool)
+- 命令行入口放在 [`src/cli`](src/cli)
+
+[`src/main.py`](src/main.py) 仅保留为手工联调入口，不作为正式 CLI 使用。
+
+## 功能概览
+
+### 1. 聊天记录导出
+
+把原始微信数据库中的单个联系人会话导出为结构化聊天记录，支持：
+
+- 文本消息清洗
+- 图片、视频、语音消息导出
+- 媒体消息结合上下文生成备注
+- 导出为 CSV 或 SQLite
+
+导出的 SQLite 默认写入 `data/out/db/messages.db`，每个联系人一张表。
+
+### 2. 用户画像分析
+
+基于已经处理好的联系人聊天表，调用 AI 做双向画像分析：
+
+- `self`：我
+- `peer`：对方
+
+画像写入同一个 `messages.db` 中的 `contact_profiles` 表。  
+如果消息表不存在，会先自动触发聊天导出，再进行画像分析。
+
+### 3. 画像问答
+
+从 `contact_profiles` 中检索相关联系人画像，再让 AI 仅基于画像作答。
+
+适用场景例如：
+
+- “XXX喜欢什么？”
+- “我平时是不是经常出差？”
+- “xxx 多高？”
+
+如果画像库没有足够证据，程序会明确回答信息不足，而不是编造。
+
+### 4. 媒体导出与数据库解密工具
+
+项目还提供独立 CLI：
+
+- 单条图片 / 视频 / 语音导出
+- SQLCipher 数据库第一页探测
+- SQLCipher 数据库完整解密
+
+## 环境要求
+
+- Python `>= 3.10`
+- 本地可访问的微信账号数据目录
+- 已准备好的解密数据库，或至少具备数据库探测 / 解密所需参数
+
+主要依赖定义在 [`pyproject.toml`](pyproject.toml)。
+
+## 安装
+
+如果你使用 `venv + pip`：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+如果你使用 `uv`：
+
+```bash
+uv sync
+```
+
+## 配置
+
+复制示例配置：
+
+```bash
+cp .env.example .env
+```
+
+然后根据你的本地环境修改 [`.env.example`](.env.example) 中对应项。  
+项目当前实际使用的环境变量都已经写在该文件里，并带有中文注释。
+
+最常用的配置是：
 
 - `WECHAT_ROOT`
-- `KEY32`
-- `CAPTURED_SALT`
-- `PASSWORD_1`
-- `PASSWORD_2`
+- `WXID`
+- `DECRYPTED_DB_DIR`
+- `MESSAGE_DB_PATH`
+- `CONTACT_DB_PATH`
+- `MESSAGE_RESOURCE_DB_PATH`
+- `MEDIA_DB_PATH`
+- `HARDLINK_DB_PATH`
+- `OPENAI_API_KEY` / `GOOGLE_API_KEY`
+- `AI_IMAGE_MODEL`
+- `AI_VIDEO_MODEL`
+- `AI_AUDIO_MODEL`
+- `AI_PROFILE_MODEL`
 
-如果使用代码里的 `from_env()` 构造实例，类会自动 `load_dotenv()` 并从 `.env` 读取这些值。
+## CLI 用法
 
-## 文档目标
+正式命令行程序都放在 [`src/cli`](src/cli)。
 
-本文用于说明如何在 macOS 环境下定位、识别、分析并离线解密桌面版微信数据库。内容覆盖以下几个方面：
-
-1. 微信聊天数据库的存储位置
-2. 数据库无法直接打开的原因
-3. 解密所需关键参数的获取方法
-4. 数据库的离线解密流程
-5. 解密结果的验证方式
-
-本文默认前提如下：
-
-- 操作系统：macOS 26.1
-- 微信版本：桌面版 WeChat 4.1.8.27
-- 当前机器已登录过目标微信账号
-- 可使用终端，并具备管理员权限
-
-文中的路径和示例命令均为脱敏后的示例值。复现时请替换为你自己的用户名、账号目录和文件路径。
-
-## 复现结论
-
-本文涉及的关键流程已经在当前机器上完整验证，以下数据库均已成功解密：
-
-1. `contact.db`
-2. `session.db`
-3. `message_0.db`
-
-## 一、数据库存储结构概览
-
-微信本地聊天数据通常不会以明文形式直接存储，而是按业务拆分为多个数据库。常见划分如下：
-
-- 消息库：保存消息正文及相关内容
-- 联系人库：保存昵称、备注、头像地址等联系人信息
-- 会话库：保存会话列表、会话摘要和最近消息元数据
-
-在 macOS 上，微信相关数据通常位于以下目录：
-
-```text
-~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/
-```
-
-本文实际分析的账号目录示例如下：
-
-```text
-~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_001
-```
-
-对应的关键数据库路径如下：
-
-```text
-~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_001/db_storage/contact/contact.db
-~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_001/db_storage/session/session.db
-~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_001/db_storage/message/message_0.db
-```
-
-如果无法快速定位数据库文件，可以通过脚本递归搜索：
-
-```python
-from pathlib import Path
-
-
-def find_databases(root_dir, db_names):
-    root = Path(root_dir)
-    results = []
-
-    for db_name in db_names:
-        results.extend(root.rglob(db_name))
-
-    return results
-
-
-paths = find_databases(
-    # 这里需要填写绝对路径，不能直接使用 "~"
-    "/Users/<你的用户名>/Library/Containers/com.tencent.xinWeChat",
-    ["message_0.db", "session.db", "contact.db"],
-)
-
-for path in paths:
-    print(path)
-```
-
-## 二、确认数据库是否已加密
-
-### 1. 使用 `sqlite3` 直接尝试打开
+### 1. 导出聊天记录
 
 ```bash
-sqlite3 ~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_001/db_storage/contact/contact.db ".tables"
+source .venv/bin/activate
+python src/cli/export_chat.py 联系人备注
 ```
+
+可选参数：
 
 ```bash
-sqlite3 ~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_001/db_storage/session/session.db ".tables"
+python src/cli/export_chat.py 联系人备注 --output data/out/db/messages.db --limit 500
 ```
+
+### 2. 生成联系人画像
 
 ```bash
-sqlite3 ~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_001/db_storage/message/message_0.db ".tables"
+python src/cli/analyze_profile.py 联系人备注
 ```
 
-如果返回类似以下错误：
-
-```text
-file is not a database
-```
-
-说明该文件不是明文 SQLite 数据库，而是经过加密后的数据库文件。
-
-## 三、确认加密方案与 SQLCipher 相关
-
-微信自身框架中包含 SQLCipher 相关符号，可以先做静态验证：
+重置已有画像后重跑：
 
 ```bash
-strings /Applications/WeChat.app/Contents/Frameworks/roam_server.framework/Versions/A/roam_server | rg "sqlcipher|cipher_page_size|hexkey|PBKDF2"
+python src/cli/analyze_profile.py 联系人备注 --reset
 ```
 
-若输出中出现以下关键词之一或多个：
-
-- `sqlcipher_export`
-- `hexkey`
-- `cipher_page_size`
-- `cipher_plaintext_header_size`
-- `PBKDF2_HMAC_SHA512`
-
-则基本可以判断：微信使用了与 SQLCipher 相近的数据库加密方案，以及对应的密钥派生逻辑。
-
-## 四、准备调试环境
-
-如果需要从运行中的微信进程中提取解密参数，需要先为 `lldb` 调试准备系统权限。
-
-### 1. 启用 Developer Tools 调试能力
+控制切片大小和消息条数：
 
 ```bash
-sudo DevToolsSecurity -enable
+python src/cli/analyze_profile.py 联系人备注 --slice-size 300 --limit 1000
 ```
 
-### 2. 验证启用状态
+### 3. 画像库问答
 
 ```bash
-DevToolsSecurity -status
+python src/cli/profile_chat.py
 ```
 
-正常情况下应看到类似输出：
-
-```text
-Developer mode is currently enabled.
-```
-
-### 3. 确认当前用户具备开发者组权限
+指定画像库：
 
 ```bash
-id
+python src/cli/profile_chat.py --db data/out/db/messages.db
 ```
 
-如果输出中不包含 `_developer`，可执行：
+### 4. 导出单条媒体
+
+导出图片：
 
 ```bash
-sudo dseditgroup -o edit -a "$USER" -t user _developer
+python src/cli/export_media.py image Msg_xxx 284 data/out/media_test
 ```
 
-### 4. 在系统设置中授权终端
-
-需要在 macOS 图形界面中手动完成以下授权：
-
-- 打开“系统设置”
-- 进入“隐私与安全性”
-- 打开“开发者工具”
-- 为当前使用的终端或宿主应用授予权限
-
-如果授权后仍无法附加调试，通常需要完全退出并重新打开终端应用。
-
-### 5. 关闭 SIP（如调试环境要求）
-
-部分环境下，如果系统完整性保护阻止调试，可在恢复环境中执行：
+导出视频：
 
 ```bash
-csrutil disable
+python src/cli/export_media.py video Msg_xxx 284 data/out/media_test
 ```
 
-该步骤属于高权限系统级修改，仅在确有必要时执行。调试完成后建议重新启用 SIP。
-
-## 五、在运行时提取解密参数
-
-### 1. 冷启动微信
+导出语音：
 
 ```bash
-open -a /Applications/WeChat.app
+python src/cli/export_media.py voice Msg_xxx 284 data/out/media_test
 ```
 
-### 2. 获取微信主进程 PID
+### 5. 探测数据库是否可解密
 
 ```bash
-for i in {1..20}; do pgrep -af '/Applications/WeChat.app/Contents/MacOS/WeChat$' && break; sleep 0.3; done
+python src/cli/decrypt_db.py probe /path/to/message.db
 ```
 
-示例输出：
-
-```text
-28577
-```
-
-### 3. 使用 `lldb` 附加进程
+### 6. 解密完整数据库
 
 ```bash
-lldb -p 28577
+python src/cli/decrypt_db.py decrypt /path/to/message.db /path/to/message.dec.db
 ```
 
-示例输出：
+## 数据流
 
-```text
-Process 28577 stopped
-* thread #1, queue = 'com.apple.main-thread', stop reason = signal SIGSTOP
-    frame #0: 0x000000019b10ec34 libsystem_kernel.dylib`mach_msg2_trap + 8
-libsystem_kernel.dylib`mach_msg2_trap:
-->  0x19b10ec34 <+8>: ret
+项目的主路径大致如下：
 
-libsystem_kernel.dylib`macx_swapon:
-    0x19b10ec38 <+0>: mov    x16, #-0x30
-    0x19b10ec3c <+4>: svc    #0x80
-    0x19b10ec40 <+8>: ret
-Target 0: (WeChat) stopped.
-Executable module set to "/Applications/WeChat.app/Contents/MacOS/WeChat".
-Architecture set to: arm64-apple-macosx-.
-```
+1. 原始 / 解密后的微信数据库作为输入
+2. 聊天导出服务读取联系人和消息表
+3. 文本消息直接清洗，媒体消息导出文件并补备注
+4. 结果落到 `messages.db` 的联系人消息表
+5. 画像分析服务从联系人消息表中分片读取消息
+6. AI 生成增量画像 patch
+7. 最终画像写入 `contact_profiles`
+8. 画像问答服务读取 `contact_profiles` 回答自然语言问题
 
-### 4. 在 PBKDF 派生函数上设置断点
+## 输出结构
 
-```lldb
-br se -n CCKeyDerivationPBKDF
-```
+### 1. 聊天导出库
 
-示例输出：
+默认输出文件：
 
-```text
-Breakpoint 1: where = libcommonCrypto.dylib`CCKeyDerivationPBKDF, address = 0x00000001aaadc970
-```
+- `data/out/db/messages.db`
 
-### 5. 继续执行并等待命中断点
+内容包括：
 
-```lldb
-continue
-```
+- 每个联系人一张消息表
+- 表字段：`local_id / sender / wxid / remark / msg_type / msg_time / msg`
 
-示例输出：
+### 2. 画像表
 
-```text
-Process 28577 resuming
-Process 28577 stopped
-* thread #74, name = 'ThreadPoolForegroundWorker', stop reason = breakpoint 1.1
-    frame #0: 0x00000001aaadc970 libcommonCrypto.dylib`CCKeyDerivationPBKDF
-libcommonCrypto.dylib`CCKeyDerivationPBKDF:
-->  0x1aaadc970 <+0>:  pacibsp
-    0x1aaadc974 <+4>:  stp    x26, x25, [sp, #-0x50]!
-    0x1aaadc978 <+8>:  stp    x24, x23, [sp, #0x10]
-    0x1aaadc97c <+12>: stp    x22, x21, [sp, #0x20]
-Target 0: (WeChat) stopped.
-```
+画像也写在同一个 `messages.db` 里，表名为：
 
-### 6. 读取关键寄存器
+- `contact_profiles`
 
-```lldb
-register read x0 x1 x2 x3 x4 x5 x6 x7 sp
-```
+核心字段包括：
 
-示例输出：
+- `subject_wxid`
+- `subject_role`
+- `subject_display_name`
+- `source_contact_username`
+- `source_contact_table`
+- `profile_summary`
+- `confidence_overall`
+- `traits_json`
+- `habits_json`
+- `basic_info_json`
+- `evidence_json`
+- `raw_model_output_json`
 
-```text
-      x0 = 0x0000000000000002
-      x1 = 0x0000000c42ea31c0
-      x2 = 0x0000000000000020
-      x3 = 0x0000000c41442c20
-      x4 = 0x0000000000000010
-      x5 = 0x0000000000000005
-      x6 = 0x000000000003e800
-      x7 = 0x0000000c42ea3920
-      sp = 0x000000017c12d090
-```
+### 3. 媒体文件
 
-### 7. 读取栈顶，确认派生密钥长度
+默认导出目录：
 
-```lldb
-memory read --format x --size 8 --count 4 $sp
-```
+- `data/out/media/<联系人名>/img`
+- `data/out/media/<联系人名>/video`
+- `data/out/media/<联系人名>/voice`
 
-示例输出：
+### 4. CSV 文件
 
-```text
-0x17c12d090: 0x0000000000000020 0x0000000c3fc05140
-0x17c12d0a0: 0x000000017c12d0e0 0x000000011dbae2a0
-```
+默认目录：
 
-其中，栈上第一个 8 字节值 `0x20` 即 `derived_key_len = 32`。
+- `data/out/csv`
 
-### 8. 读取 password 原始字节
+## 联系人解析规则
 
-```lldb
-memory read --size 1 --count 32 0x0000000c42ea31c0
-```
+当前联系人解析规则如下：
 
-示例输出：
+- 普通关键字只查 `contact.alias / contact.remark / contact.nick_name`
+- 不把 `username` 作为普通关键字搜索字段
+- 如果你直接传的是 `wxid_*` 或 `xxx@chatroom`，会按 `username` 精确解析
+- 优先级：
+  - `remark` 精确
+  - `nick_name` 精确
+  - `alias` 精确
+  - `remark` 模糊
+  - `nick_name` 模糊
+  - `alias` 模糊
+- 如果命中多个联系人，不自动选择，会要求你改用 `username`
 
-```text
-0xc42ea31c0: 69 d2 aa a3 6b a6 40 bd 93 af a0 91 ee eb b0 bd  i...k.@.........
-0xc42ea31d0: af c1 6a b0 e7 e5 43 93 b5 79 8c df 5d f4 86 d2  ..j...C..y..]...
-```
+## 代码结构
 
-### 9. 读取 salt 原始字节
+### CLI
 
-```lldb
-memory read --size 1 --count 16 0x0000000c41442c20
-```
+- [export_chat.py](src/cli/export_chat.py)：聊天记录导出 CLI
+- [analyze_profile.py](src/cli/analyze_profile.py)：联系人画像分析 CLI
+- [profile_chat.py](src/cli/profile_chat.py)：画像问答 CLI
+- [export_media.py](src/cli/export_media.py)：单条媒体导出 CLI
+- [decrypt_db.py](src/cli/decrypt_db.py)：数据库探测 / 解密 CLI
 
-示例输出：
+### 业务模块
 
-```text
-0xc41442c20: 92 14 5f 5d 37 85 29 4c 5e 3e 67 1a 5f ce e2 e7  .._]7.)L^>g._...
-```
+- [application.py](src/wechat_tool/services/application.py)：应用装配层
+- [service.py](src/wechat_tool/export/service.py)：聊天导出服务
+- [service.py](src/wechat_tool/profile/service.py)：画像分析服务
+- [qa_service.py](src/wechat_tool/profile/qa_service.py)：画像问答服务
+- [service_base.py](src/wechat_tool/common/service_base.py)：共享基础能力
+- [manager.py](src/wechat_tool/media/manager.py)：媒体导出管理器
+- [sqlcipher_probe.py](src/wechat_tool/database/sqlcipher_probe.py)：数据库探测与解密
+- [ai.py](src/wechat_tool/clients/ai.py)：AI 适配层
 
-### 10. 脱离调试进程
+## 已知限制
 
-```lldb
-detach
-quit
-```
+- 当前画像分析只支持单聊个人用户，群聊会直接报未实现
+- 画像质量高度依赖聊天内容密度与模型能力
+- `gpt-4o-mini` 可用，但不一定适合做高质量人物画像总结
+- 如果原始媒体库缺失资源，导出语音 / 视频 / 图片时可能失败
+- 画像问答当前是基于画像库检索，不直接回看完整聊天原文
+- `src/main.py` 只是手工测试入口，不保证长期稳定
 
-示例输出：
+## 开发说明
 
-```text
-Process 28577 detached
-```
+如果你只想调用业务代码，不走 CLI，建议直接使用：
 
-### 11. 最终提取到的 KDF 参数
+- [`WechatChatApplication`](src/wechat_tool/services/application.py)
+- [`WechatChatExportService`](src/wechat_tool/export/service.py)
+- [`WechatContactProfileService`](src/wechat_tool/profile/service.py)
+- [`WechatProfileQAService`](src/wechat_tool/profile/qa_service.py)
 
-```text
-alg = 2
-password_len = 32
-salt_len = 16
-prf = 5
-rounds = 0x3e800 = 256000
-derived_key_len = 32
-```
+其中应用层已经统一封装了：
 
-寄存器与参数的对应关系如下：
+- 聊天导出
+- 画像分析
+- 画像问答
 
-```text
-x0  -> alg
-x1  -> password 地址
-x2  -> password_len
-x3  -> salt 地址
-x4  -> salt_len
-x5  -> prf
-x6  -> rounds
-x7  -> output 地址
-sp  -> 栈上第一个 8 字节值为 derived_key_len
-```
-
-提取到的 `password`：
-
-```hex
-<已脱敏，实际值请自行提取>
-```
-
-提取到的 `salt`：
-
-```hex
-<已脱敏，实际值请自行提取>
-```
-
-## 六、离线解密数据库
-
-可直接使用项目中的 `src/wechat_sqlcipher_probe.py` 完成解密。
-
-示例代码如下：
-
-```python
-from pathlib import Path
-
-from wechat_sqlcipher_probe import WechatSQLCipherProbe
-
-
-probe = WechatSQLCipherProbe(
-    password=bytes.fromhex(os.getenv("PASSWORD_1") + os.getenv("PASSWORD_2")),
-    captured_salt=bytes.fromhex("<请填入你自己提取到的 salt hex>"),
-)
-
-result = probe.decrypt_first_page(Path("/path/to/message_0.db"))
-print(result["header_ok"])
-
-probe.decrypt_db(
-    Path("/path/to/message_0.db"),
-    Path("/path/to/message_0.decrypted.db"),
-)
-```
-
-如果 `header_ok` 为 `True`，通常说明第一页已按预期恢复出 SQLite 文件头，后续可继续进行整库解密。
-
-## 七、验证解密结果
-
-解密完成后，可以使用 `sqlite3` 再次验证：
-
-```bash
-sqlite3 /path/to/message_0.decrypted.db ".tables"
-```
-
-如果能够正常列出表结构，而不再出现 `file is not a database`，则说明解密结果可被 SQLite 正常识别。
-
-进一步还可以执行简单查询，例如：
-
-```bash
-sqlite3 /path/to/message_0.decrypted.db "select name from sqlite_master where type='table' limit 20;"
-```
-
-## 八、收尾建议
-
-如果此前为调试关闭了 SIP，建议在验证完成后重新启用：
-
-```bash
-csrutil enable
-```
-
-同时建议将以下信息单独保存，便于后续重复解密：
-
-- 目标账号目录路径
-- 提取到的 `password`
-- 对应数据库的 `salt`
-- 页大小与保留字节配置
-
-以上信息一旦确认，后续通常无需再次进行完整的动态调试流程。
+适合在脚本或测试代码中直接复用。
